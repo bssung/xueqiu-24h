@@ -4,23 +4,31 @@ const path = require("path");
 
 // Fetch a xueqiu user's posts/replies published in the last 24 hours.
 //
-// Risk-control context (learned from run logs):
-//   - The homepage seeds anonymous tokens (xq_a_token ...) without any
-//     challenge, and the timeline API works from the homepage origin.
-//   - The profile URL /u/<id> is protected by an Aliyun "slide to verify"
-//     (ACW) challenge; the API called from that challenged origin returns
-//     an HTML verification page instead of JSON.
+// Risk-control context (learned from run logs #1-#3):
+//   - Profile URL /u/<id> is behind an Aliyun ACW "slide to verify" page.
+//   - Synthetic in-page PointerEvents (isTrusted=false) get rejected by
+//     ACW — the drag must be produced by Playwright's native mouse (CDP
+//     Input.dispatchMouseEvent => isTrusted=true).
+//   - The runner's datacenter IP is also fingerprinted (API@home got
+//     400), so the page has to pass the ACW check to earn a pass cookie.
 //
 // Strategy:
-//   1. Visit homepage, seed tokens, call the timeline API from homepage.
-//   2. If that yields nothing, open the profile page; when the ACW slider
-//      appears, solve it with a human-like drag and retry the API from the
-//      profile origin.
-//   3. Last resort: DOM scrape of the profile feed.
+//   1. Launch with a desktop UA + headless-fingerprint patches,
+//      zh-CN locale, Asia/Shanghai timezone.
+//   2. Visit homepage to seed anonymous tokens (xq_a_token ...).
+//   3. Open the profile page; if the ACW slider appears, drag the handle
+//      with page.mouse (trusted events, eased trajectory, jitter,
+//      endpoint overshoot), up to 3 attempts, re-navigating between.
+//   4. Fetch the timeline API from the (now passed) profile origin,
+//      paginating until posts older than 24h appear.
+//   5. Last resort: DOM scrape of the profile feed.
 // The 24h window is decided from the created_at millisecond timestamp
 // (exact); DOM labels are only used by the last-resort path.
 const USER_ID = process.env.XUEQIU_USER_ID || "9493911686";
 const PROFILE_URL = `https://xueqiu.com/u/${USER_ID}`;
+const UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const WINDOW_MS = 24 * 3600 * 1000;
 
 // Xueqiu profile time labels: "15分钟前", "3小时前", "昨天 14:30",
@@ -53,139 +61,120 @@ function beijingStamp(d) {
   };
 }
 
-// In-page: detect the Aliyun ACW "slide to verify" challenge.
+// In-page: detect the Aliyun ACW "slide to verify" challenge and locate
+// the drag handle. Returns {challenge, handle:{x,y,w,h}|null, trackW}.
 function detectChallenge() {
   const out = {
     url: location.href,
     title: document.title,
-    isChallenge: /verif|valid|acw/i.test(location.search + location.hash) ||
-                 /Access Verification|slide to verify|滑动验证|访问验证/.test(document.body ? document.body.innerText.slice(0, 500) : ""),
+    challenge: /verif|valid|acw/i.test(location.search + location.hash) ||
+               /Access Verification|slide to verify|滑动验证|访问验证/.test(
+                 document.body ? document.body.innerText.slice(0, 500) : ""),
     handle: null,
     trackW: 0
   };
+  const sized = (el) => {
+    if (!el || el.offsetParent === null) return null;
+    const r = el.getBoundingClientRect();
+    return (r.width > 10 && r.width < 120 && r.height > 10 && r.height < 120)
+      ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+  };
   const cands = [
-    "[class*=nc_iconfont]", "[id*=nc_1_scale]", "[class*=nc-container] [class*=scale]",
-    "[class*=slider] [class*=btn]", "[class*=drag] [class*=handle]",
-    "[class*=verify] [class*=icon]", "[class*=slider-btn]", "[class*=slide] [class*=btn]"
+    "#nc_1_n1z, [id*=nc_1_scale]",
+    "[class*=nc_bg] [class*=scale], [class*=nc-container] [class*=scale]",
+    "[class*=nc_iconfont]",
+    "[class*=slider] [class*=btn], [class*=slider-btn]",
+    "[class*=drag] [class*=handle]",
+    "[class*=verify] [class*=icon]",
+    "[class*=slide] [class*=btn]"
   ];
   for (const sel of cands) {
-    const el = document.querySelector(sel);
-    if (el && el.offsetParent !== null) {
-      const r = el.getBoundingClientRect();
-      if (r.width > 10 && r.width < 120 && r.height > 10) {
-        out.handle = { x: r.x, y: r.y, w: r.width, h: r.height };
-        break;
-      }
+    for (const el of document.querySelectorAll(sel)) {
+      out.handle = sized(el);
+      if (out.handle) break;
     }
+    if (out.handle) break;
   }
   if (!out.handle) {
-    // generic: smallest visible box inside a wide track
-    const boxes = [...document.querySelectorAll("div,span,button,a")].filter(e => {
+    // Generic: a small square-ish box inside the challenge card.
+    const boxes = [...document.querySelectorAll("div,span,a,button")].filter(e => {
       if (e.offsetParent === null) return false;
       const r = e.getBoundingClientRect();
-      return r.width >= 24 && r.width <= 60 && r.height >= 24 && r.height <= 60 &&
-             /slide|drag|verify|slider|nc_|btn/i.test((e.className || "") + (e.id || ""));
+      return r.width >= 30 && r.width <= 60 && r.height >= 30 && r.height <= 60 &&
+             /slide|drag|verify|slider|nc_|btn|icon/i.test((e.className || "") + (e.id || ""));
     });
     for (const e of boxes) {
-      const r = e.getBoundingClientRect();
-      out.handle = { x: r.x, y: r.y, w: r.width, h: r.height };
-      break;
+      out.handle = sized(e);
+      if (out.handle) break;
     }
   }
   if (out.handle) {
-    const track = document.querySelector("[class*=nc_bg],[class*=track],[class*=slider-track],[class*=verify-bar]");
+    const track = document.querySelector(
+      "[class*=nc_bg], [class*=track], [class*=slider-track], [class*=verify-bar], [class*=bar]"
+    );
     if (track) out.trackW = track.getBoundingClientRect().width;
   }
   return out;
 }
 
-// In-page: perform a human-like drag of the ACW slider (pointer events,
-// eased x-velocity, slight y jitter). Self-contained (detectChallenge is
-// duplicated inline because page.evaluate serializes a single function).
-async function solveSlider() {
-  function detect() {
-    const out = {
-      isChallenge: /verif|valid|acw/i.test(location.search + location.hash) ||
-                   /Access Verification|slide to verify|滑动验证|访问验证/.test(document.body ? document.body.innerText.slice(0, 500) : ""),
-      handle: null
-    };
-    const cands = [
-      "[class*=nc_iconfont]", "[id*=nc_1_scale]", "[class*=nc-container] [class*=scale]",
-      "[class*=slider] [class*=btn]", "[class*=drag] [class*=handle]",
-      "[class*=verify] [class*=icon]", "[class*=slider-btn]", "[class*=slide] [class*=btn]"
-    ];
-    for (const sel of cands) {
-      const el = document.querySelector(sel);
-      if (el && el.offsetParent !== null) {
-        const r = el.getBoundingClientRect();
-        if (r.width > 10 && r.width < 120 && r.height > 10) {
-          out.handle = { x: r.x, y: r.y, w: r.width, h: r.height };
-          break;
-        }
-      }
-    }
-    if (!out.handle) {
-      const boxes = [...document.querySelectorAll("div,span,button,a")].filter(e => {
-        if (e.offsetParent === null) return false;
-        const r = e.getBoundingClientRect();
-        return r.width >= 24 && r.width <= 60 && r.height >= 24 && r.height <= 60 &&
-               /slide|drag|verify|slider|nc_|btn/i.test((e.className || "") + (e.id || ""));
-      });
-      for (const e of boxes) {
-        const r = e.getBoundingClientRect();
-        out.handle = { x: r.x, y: r.y, w: r.width, h: r.height };
-        break;
-      }
-    }
-    if (out.handle) {
-      const track = document.querySelector("[class*=nc_bg],[class*=track],[class*=slider-track],[class*=verify-bar]");
-      if (track) out.trackW = track.getBoundingClientRect().width;
-    }
-    return out;
-  }
-  const before = detect();
-  if (!before.handle) return "no_handle";
-  const h = before.handle;
-  const trackW = before.trackW || 300;
-  const dist = Math.min(trackW - h.w - 6, 280);
-  const sx = h.x + h.w / 2, sy = h.y + h.h / 2;
-  const el = document.elementFromPoint(sx, sy) || document.body;
-
-  const fire = (type, x, y) => {
-    el.dispatchEvent(new PointerEvent(type, {
-      bubbles: true, cancelable: true, view: window,
-      clientX: x, clientY: y, pointerId: 1, pointerType: "mouse", button: 0, buttons: type === "pointerup" ? 0 : 1
-    }));
-  };
-  const steps = 60;
-  fire("pointerdown", sx, sy);
-  const t0 = performance.now();
+// Human-like drag of the ACW slider using Playwright's NATIVE mouse
+// (trusted events): ease-in-out, per-step timing jitter, y wobble,
+// endpoint overshoot-and-settle. Returns a status object.
+async function solveWithNativeMouse(page, handle, trackW) {
+  const sx = handle.x + handle.w / 2;
+  const sy = handle.y + handle.h / 2;
+  const dist = Math.min((trackW || handle.w * 5) - handle.w - 4, 290);
+  const t0 = Date.now();
+  await page.mouse.move(sx, sy, { steps: 5 });
+  await page.waitForTimeout(150 + Math.random() * 250);
+  await page.mouse.down();
+  const steps = 55 + Math.floor(Math.random() * 25);
   for (let i = 1; i <= steps; i++) {
-    // ease-in-out with overshoot correction near the end
     const p = i / steps;
     const eased = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
     let dx = dist * eased;
-    if (p > 0.92) dx = dist + Math.sin(p * 40) * 1.5; // micro jitter at the end
-    const jx = (Math.random() - 0.5) * 1.2;
-    const jy = (Math.random() - 0.5) * 2.0;
-    fire("pointermove", sx + dx + jx, sy + jy);
-    await new Promise(r => setTimeout(r, 8 + Math.random() * 14));
+    if (p > 0.9) dx = dist + Math.sin(p * 45) * 2.0; // micro overshoot at the end
+    const x = sx + dx + (Math.random() - 0.5) * 1.5;
+    const y = sy + (Math.random() - 0.5) * 3.0;
+    await page.mouse.move(x, y);
+    await page.waitForTimeout(6 + Math.random() * 16);
   }
-  fire("pointerup", sx + dist, sy);
-  const elapsed = performance.now() - t0;
-  await new Promise(r => setTimeout(r, 3000));
-  const after = detect();
-  return JSON.stringify({ elapsed_ms: Math.round(elapsed), still: after.isChallenge, head: document.body ? document.body.innerText.slice(0, 120) : "" });
+  await page.mouse.move(sx + dist, sy);
+  await page.waitForTimeout(60 + Math.random() * 120);
+  await page.mouse.up();
+  const elapsed = Date.now() - t0;
+  await page.waitForTimeout(3000);
+  let d;
+  try { d = await page.evaluate(detectChallenge); } catch (_) { d = { challenge: null }; }
+  return { elapsed_ms: elapsed, still: d.challenge, title: d.title };
 }
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({
-    viewport: { width: 1440, height: 900 },
-    userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"]
   });
+  const context = await browser.newContext({
+    userAgent: UA,
+    viewport: { width: 1440, height: 900 },
+    locale: "zh-CN",
+    timezoneId: "Asia/Shanghai"
+  });
+  // Fingerprint patches for headless detection.
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    window.chrome = window.chrome || { runtime: {} };
+    const perm = (window.navigator.permissions && window.navigator.permissions.query) || null;
+    if (perm) {
+      window.navigator.permissions.query = (p) =>
+        p && p.name === "notifications"
+          ? Promise.resolve({ state: Notification.permission })
+          : perm(p);
+    }
+    Object.defineProperty(navigator, "languages", { get: () => ["zh-CN", "zh", "en"] });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+  });
+  const page = await context.newPage();
 
   let posts = [];
   let freshSource = "none";
@@ -214,7 +203,7 @@ async function solveSlider() {
         out.http = r.status;
         if (r.status !== 200) { out.error = "http:" + r.status; break; }
         let j;
-        try { j = await r.json(); } catch (e) { out.error = "json:" + e.message; break; }
+        try { j = await r.json(); } catch (e) { out.error = "json:" + e.message.slice(0, 80); break; }
         const list = j.statuses || [];
         out.pages = p;
         out.total_seen += list.length;
@@ -239,13 +228,12 @@ async function solveSlider() {
   }
 
   try {
-    // --- 1. homepage: seed tokens + try API from the clean origin --------
+    // --- 1. homepage: seed tokens ------------------------------------------
     console.log("Seeding cookies: https://xueqiu.com/");
     await page.goto("https://xueqiu.com/", { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(2500);
     console.log("Home title:", await page.title());
-    const cookieNames = (await page.context().cookies()).map((c) => c.name).join(",");
-    console.log("Cookies:", cookieNames);
+    console.log("Cookies:", (await context.cookies()).map((c) => c.name).join(","));
 
     const apiHome = await apiFetch();
     console.log(`API@home: pages=${apiHome.pages} http=${apiHome.http} total_seen=${apiHome.total_seen} kept=${apiHome.posts.length} error=${apiHome.error}`);
@@ -254,34 +242,36 @@ async function solveSlider() {
       freshSource = "api-home";
     }
 
-    // --- 2. profile: slider solve + API retry ----------------------------
-    if (posts.length === 0) {
-      console.log(`Opening: ${PROFILE_URL}`);
+    // --- 2. profile: ACW slider (trusted mouse), up to 3 rounds ------------
+    for (let round = 1; posts.length === 0 && round <= 3; round++) {
+      console.log(`Round ${round}: Opening ${PROFILE_URL}`);
       await page.goto(PROFILE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
       await page.waitForTimeout(4000);
-      const diag = await page.evaluate(detectChallenge);
-      console.log("Profile diag:", JSON.stringify({ url: diag.url.slice(0, 120), title: diag.title, challenge: diag.isChallenge, head: diag.head }));
+      let diag;
+      try { diag = await page.evaluate(detectChallenge); } catch (e) { diag = { challenge: true, handle: null, title: "eval-err" }; }
+      console.log(`Round ${round} diag: challenge=${diag.challenge} title=${diag.title} handle=${JSON.stringify(diag.handle)} trackW=${diag.trackW}`);
 
-      if (diag.isChallenge && diag.handle) {
-        console.log("Slider detected, attempting drag solve...");
-        const result = await page.evaluate(solveSlider);
-        console.log("Slider result:", result);
-        await page.waitForTimeout(3000);
-        const diag2 = await page.evaluate(detectChallenge);
-        console.log("Post-solve diag:", JSON.stringify({ title: diag2.title, challenge: diag2.isChallenge, head: diag2.head }));
+      if (diag.challenge && diag.handle) {
+        console.log(`Round ${round}: dragging slider (native mouse)...`);
+        const res = await solveWithNativeMouse(page, diag.handle, diag.trackW);
+        console.log(`Round ${round} slider: ${JSON.stringify(res)}`);
+        if (!res.still) {
+          await page.waitForTimeout(2500);
+        }
+      } else if (diag.challenge) {
+        console.log(`Round ${round}: challenge present but no handle found`);
       }
 
-      // API from the profile origin — always attempted (works when the
-      // page loaded clean, or after a successful slider solve).
-      const apiProfile = await apiFetch();
-      console.log(`API@profile: pages=${apiProfile.pages} http=${apiProfile.http} total_seen=${apiProfile.total_seen} kept=${apiProfile.posts.length} error=${apiProfile.error}`);
-      if (!apiProfile.error && apiProfile.total_seen > 0) {
-        posts = apiProfile.posts;
+      const api = await apiFetch();
+      console.log(`Round ${round} API: pages=${api.pages} http=${api.http} total_seen=${api.total_seen} kept=${api.posts.length} error=${api.error}`);
+      if (!api.error && api.total_seen > 0) {
+        posts = api.posts;
         freshSource = "api-profile";
+        break;
       }
     }
 
-    // --- 3. DOM fallback ---------------------------------------------------
+    // --- 3. DOM fallback -----------------------------------------------------
     if (posts.length === 0) {
       freshSource = "dom";
       let prevTime = "";
@@ -336,13 +326,13 @@ async function solveSlider() {
 
     console.log(`Source=${freshSource}; posts: ${posts.length}`);
     if (posts.length === 0) {
-      console.warn("WARNING: no posts captured. Profile likely under risk-control; see diagnostics above.");
+      console.warn("WARNING: no posts captured. Risk-control (ACW) likely still blocking; see round logs above.");
     }
   } catch (error) {
     console.error("Crawler failed:");
     console.error(error);
   } finally {
-    // --- 4. de-duplicate, merge, save --------------------------------------
+    // --- 4. de-duplicate, merge, save ---------------------------------------
     const dataDir = path.join(process.cwd(), "data", "xueqiu", USER_ID);
     const existing = new Set();
     if (fs.existsSync(dataDir)) {
