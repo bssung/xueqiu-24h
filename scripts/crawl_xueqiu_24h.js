@@ -201,9 +201,11 @@ async function solveWithNativeMouse(page, handle, trackW) {
           );
         } catch (e) { out.error = "fetch:" + e.message; break; }
         out.http = r.status;
+        const raw = await r.text();
+        out.bodyHead = raw.slice(0, 80).replace(/\s+/g, " ");
         if (r.status !== 200) { out.error = "http:" + r.status; break; }
         let j;
-        try { j = await r.json(); } catch (e) { out.error = "json:" + e.message.slice(0, 80); break; }
+        try { j = JSON.parse(raw); } catch (e) { out.error = "json:" + out.bodyHead.slice(0, 40); break; }
         const list = j.statuses || [];
         out.pages = p;
         out.total_seen += list.length;
@@ -225,6 +227,30 @@ async function solveWithNativeMouse(page, handle, trackW) {
       }
       return out;
     }, USER_ID);
+  }
+
+  // WAF challenge recovery: when the API answers with HTML (ACW JS
+  // challenge page or 400), the challenge script only runs when the URL
+  // is loaded as a real navigation. Load it directly, let the JS mint
+  // the pass cookie, then return to the profile origin.
+  async function wafRecover(api) {
+    const looksWaf =
+      (api.http === 400) ||
+      (api.http === 200 && /<script|<!doctype|<html|<textarea/i.test(api.bodyHead || ""));
+    if (!looksWaf) return false;
+    console.log("WAF challenge detected (http=" + api.http + " body=" + (api.bodyHead || "").slice(0, 40) + "), loading challenge via navigation...");
+    const challengeUrl = "https://xueqiu.com/v4/statuses/user_timeline.json?user_id=" + USER_ID + "&page=1&count=5";
+    try {
+      await page.goto(challengeUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+    } catch (e) {
+      console.log("challenge goto error: " + e.message.slice(0, 120));
+    }
+    await page.waitForTimeout(4000); // give the ACW script time to run + set cookies
+    const cookies = (await context.cookies("https://xueqiu.com")).map((c) => c.name).join(",");
+    console.log("post-challenge cookies:", cookies);
+    await page.goto(PROFILE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(3000);
+    return true;
   }
 
   try {
@@ -262,8 +288,15 @@ async function solveWithNativeMouse(page, handle, trackW) {
         console.log(`Round ${round}: challenge present but no handle found`);
       }
 
-      const api = await apiFetch();
+      let api = await apiFetch();
       console.log(`Round ${round} API: pages=${api.pages} http=${api.http} total_seen=${api.total_seen} kept=${api.posts.length} error=${api.error}`);
+      if (api.error && round <= 2) {
+        const recovered = await wafRecover(api);
+        if (recovered) {
+          api = await apiFetch();
+          console.log(`Round ${round} API(retry): pages=${api.pages} http=${api.http} total_seen=${api.total_seen} kept=${api.posts.length} error=${api.error}`);
+        }
+      }
       if (!api.error && api.total_seen > 0) {
         posts = api.posts;
         freshSource = "api-profile";
