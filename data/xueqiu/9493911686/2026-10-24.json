@@ -3,8 +3,16 @@
   "profile_url": "https://xueqiu.com/u/9493911686",
   "window": "last-24h",
   "source": "xhr",
-  "crawled_at_beijing": "2026年10月24日星期六 06:53:02",
+  "crawled_at_beijing": "2026年10月24日星期六 10:36:37",
   "crawled_date": "2026-10-24",
-  "post_count": 0,
-  "posts": []
+  "post_count": 1,
+  "posts": [
+    {
+      "id": "413692859",
+      "created_at": "2026-10-24T01:30:36.000Z",
+      "kind": "status",
+      "url": "https://xueqiu.com/9493911686/413692859",
+      "text": "我在雪球已经累计发布了50篇 紫金黄金国际 相关帖子，点赞添彩，继续前行！这是一个值得记录的时刻，快来为我的成就点赞！"
+    }
+  ]
 }
