@@ -3,8 +3,23 @@
   "profile_url": "https://xueqiu.com/u/9493911686",
   "window": "last-24h",
   "source": "xhr",
-  "crawled_at_beijing": "2026年10月25日星期日 06:18:13",
+  "crawled_at_beijing": "2026年10月25日星期日 10:24:50",
   "crawled_date": "2026-10-25",
-  "post_count": 0,
-  "posts": []
+  "post_count": 2,
+  "posts": [
+    {
+      "id": "413741806",
+      "created_at": "2026-10-25T02:09:01.000Z",
+      "kind": "retweet",
+      "url": "https://xueqiu.com/9493911686/413741806",
+      "text": "同样是卖水，可口可乐和东鹏特饮、农夫山泉这些还是有区别的。 最近也是研究了一下，感觉东鹏、农夫山泉这种是极难做到可口可乐的全球化和普适性的。"
+    },
+    {
+      "id": "413741220",
+      "created_at": "2026-10-25T01:58:09.000Z",
+      "kind": "status",
+      "url": "https://xueqiu.com/9493911686/413741220",
+      "text": "美国股民总是躺赢，买水也躺赢。"
+    }
+  ]
 }
