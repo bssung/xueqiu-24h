@@ -1,0 +1,32 @@
+{
+  "user_id": "9493911686",
+  "profile_url": "https://xueqiu.com/u/9493911686",
+  "window": "last-24h",
+  "source": "xhr",
+  "crawled_at_beijing": "2026年11月11日星期三 03:17:43",
+  "crawled_date": "2026-11-11",
+  "post_count": 3,
+  "posts": [
+    {
+      "id": "416331021",
+      "created_at": "2026-11-10T15:04:44.000Z",
+      "kind": "retweet",
+      "url": "https://xueqiu.com/9493911686/416331021",
+      "text": "早睡早起，明天的事明天就知道了。"
+    },
+    {
+      "id": "416329759",
+      "created_at": "2026-11-10T14:54:39.000Z",
+      "kind": "status",
+      "url": "https://xueqiu.com/9493911686/416329759",
+      "text": "撸个串回来发现这么刺激了吗明天老A怎么办？还托不托？"
+    },
+    {
+      "id": "416317401",
+      "created_at": "2026-11-10T12:58:59.000Z",
+      "kind": "status",
+      "url": "https://xueqiu.com/9493911686/416317401",
+      "text": "商K也是越来越贵了～还好我不好这口。"
+    }
+  ]
+}
