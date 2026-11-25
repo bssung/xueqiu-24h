@@ -1,0 +1,25 @@
+{
+  "user_id": "9493911686",
+  "profile_url": "https://xueqiu.com/u/9493911686",
+  "window": "last-24h",
+  "source": "xhr",
+  "crawled_at_beijing": "2026年11月25日星期三 08:15:42",
+  "crawled_date": "2026-11-25",
+  "post_count": 2,
+  "posts": [
+    {
+      "id": "418434732",
+      "created_at": "2026-11-24T14:52:02.000Z",
+      "kind": "retweet",
+      "url": "https://xueqiu.com/9493911686/418434732",
+      "text": "回复@Ellis_Jiang: 允悲表情……//@Ellis_Jiang:回复@斯托伯的天空:人家的石油，黄金股涨的好好的。"
+    },
+    {
+      "id": "418431608",
+      "created_at": "2026-11-24T14:33:39.000Z",
+      "kind": "retweet",
+      "url": "https://xueqiu.com/9493911686/418431608",
+      "text": "回复@斯托伯的天空: 哎，果不其然啊。 查看图片//@斯托伯的天空:回复@斯托伯的天空:今天加更一篇，谈谈黄仁勋的事儿和现在的这个市场。"
+    }
+  ]
+}
